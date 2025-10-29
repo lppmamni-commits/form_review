@@ -116,10 +116,13 @@
         }
 
         async function showAdminPanel() {
+            console.log("showAdminPanel called."); // Log saat fungsi dipanggil
             loginContainer.style.display = 'none';
             reviewerContainer.style.display = 'none';
             adminContainer.style.display = 'block';
-            await loadAdminData(); 
+             console.log("Admin container display set to block."); // Log perubahan style
+            await loadAdminData(); // Muat data saat panel admin dibuka
+            console.log("loadAdminData finished in showAdminPanel."); // Log selesai load data
         }
 
         // --- Fungsi Admin ---
@@ -553,7 +556,6 @@
             return finalY + 15 + (catatanLines.length * 4); 
         }
 
-        // --- FUNGSI addPKMTable DIPERBARUI ---
         function addPKMTable(doc, reviewData, startY) {
             const s = reviewData.scores || {}; // Skor mentah (0-100)
             const t = reviewData.totals || {}; // Total skor (sudah dibobot)
@@ -744,15 +746,18 @@
             loginBtn.addEventListener('click', () => {
                  const user = usernameInput.value;
                 const pass = passwordInput.value;
+                 console.log("Login attempt:", { user, pass }); // Log percobaan login
                 if (user === 'admin' && pass === '123456789') {
+                     console.log("Admin credentials correct. Calling showAdminPanel..."); // Log kredensial benar
                     showAdminPanel();
                 } else {
+                     console.log("Invalid credentials."); // Log kredensial salah
                     loginError.textContent = 'Username atau password salah.';
                 }
             });
             showReviewerFormBtn.addEventListener('click', showReviewerForm);
             logoutBtn.addEventListener('click', showLoginScreen);
-            backToLoginBtn.addEventListener('click', showReviewerForm); 
+            backToLoginBtn.addEventListener('click', showLoginScreen); // <-- PERBAIKAN DI SINI
             refreshAdminDataBtn.addEventListener('click', loadAdminData);
 
             // Listener Tombol PDF (SAMA UNTUK KEDUANYA)
@@ -1927,4 +1932,5 @@
 
 </body>
 </html>
+
 
