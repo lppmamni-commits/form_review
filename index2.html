@@ -1,0 +1,2039 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Form Penilaian Monev PkM & Penelitian</title>
+    <!-- Memuat Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Memuat Font Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Memuat jsPDF dan jsPDF-AutoTable untuk ekspor PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        /* Menyembunyikan section secara default */
+        .hidden-section {
+            display: none;
+        }
+        /* Style untuk modal PDF */
+        #messageModal .button-pdf {
+            background-color: #16a34a; /* green-600 */
+            color: white;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            transition: background-color 0.2s;
+        }
+        #messageModal .button-pdf:hover {
+            background-color: #15803d; /* green-700 */
+        }
+        #messageModal .button-pdf:disabled {
+            background-color: #9ca3af; /* gray-400 */
+            cursor: not-allowed;
+        }
+    </style>
+
+    <!-- Impor Firebase SDK -->
+    <script type="module">
+        // Import fungsi yang diperlukan dari Firebase SDK
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, addDoc, getDocs, query, Timestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Variabel Global Firebase ---
+        let app, auth, db, userId;
+        
+        // --- Variabel Konfigurasi (WAJIB) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        
+        // --- KONFIGURASI FIREBASE ANDA ---
+        const userFirebaseConfig = {
+          apiKey: "AIzaSyCDVFpuvpy1UYGCJepEOt6iGlaEZiN4xow",
+          authDomain: "review-ppm.firebaseapp.com",
+          projectId: "review-ppm",
+          storageBucket: "review-ppm.appspot.com", // <-- Ini sudah diperbaiki
+          messagingSenderId: "1073630033517",
+          appId: "1:1073630033517:web:d874d7ed7e010c8e683164",
+          measurementId: "G-NPZD5VT3YS"
+        };
+        // --- AKHIR KONFIGURASI FIREBASE ANDA ---
+
+        // PERBAIKAN: Logika pemuatan konfigurasi yang lebih sederhana
+        let firebaseConfig;
+        if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+            try {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } catch (e) {
+                console.error("Gagal parse __firebase_config, menggunakan fallback:", e);
+                firebaseConfig = userFirebaseConfig; // Fallback jika parse gagal
+            }
+        } else {
+            firebaseConfig = userFirebaseConfig; // Langsung gunakan objek config Anda jika __firebase_config tidak ada
+        }
+
+        // --- Variabel Data Aplikasi ---
+        let dataPenelitian = [];
+        let dataPKM = [];
+        let adminRecapData = []; // Menyimpan data rekap admin
+        let lastSubmittedReview = null; // Menyimpan data review terakhir untuk PDF
+        let isDataLoaded = false; // Flag untuk menandai data sudah dimuat
+        
+        // --- Inisialisasi Library PDF ---
+        const { jsPDF } = window.jspdf;
+        // Tidak perlu variabel global 'autoTable' jika plugin terpasang ke prototype jsPDF
+
+        // --- Elemen DOM ---
+        let authStatus, messageModal, modalTitle, modalMessage, modalCloseButton;
+        let loginContainer, reviewerContainer, adminContainer;
+        let loginBtn, showReviewerFormBtn, usernameInput, passwordInput, loginError;
+        let backToLoginBtn, logoutBtn, refreshAdminDataBtn, recapTableContainer;
+        let kegiatanSelect, pelaksanaContainer, pelaksanaHeader, pelaksanaSelect;
+        let dataDisplayContainer, dataDisplay, mulaiReviewButton;
+        let formPenelitianContainer, formPKMContainer;
+        let submitPenelitianBtn, submitPKMBtn, monevForm;
+        let pkmScoreInputs, totalScorePKMDisplay, totalScoreUmumDisplay, totalScorePKMSpesifikDisplay;
+
+        // --- Fungsi Modal Notifikasi ---
+        function showMessageModal(title, message) {
+            modalTitle.textContent = title;
+            modalMessage.innerHTML = message; // Diubah ke innerHTML untuk tombol
+            messageModal.style.display = 'flex';
+        }
+        function hideMessageModal() {
+            messageModal.style.display = 'none';
+        }
+
+        // --- Fungsi Navigasi Halaman ---
+        function showLoginScreen() {
+            loginContainer.style.display = 'block';
+            reviewerContainer.style.display = 'none';
+            adminContainer.style.display = 'none';
+            usernameInput.value = '';
+            passwordInput.value = '';
+            loginError.textContent = '';
+        }
+
+        function showReviewerForm() {
+            loginContainer.style.display = 'none';
+            reviewerContainer.style.display = 'block';
+            adminContainer.style.display = 'none';
+        }
+
+        async function showAdminPanel() {
+            loginContainer.style.display = 'none';
+            reviewerContainer.style.display = 'none';
+            adminContainer.style.display = 'block';
+            await loadAdminData(); // Muat data saat panel admin dibuka
+        }
+
+        // --- Fungsi Admin ---
+        async function loadAdminData() {
+            if (!db) {
+                recapTableContainer.innerHTML = '<p class="text-red-500">Koneksi database belum siap.</p>';
+                return;
+            }
+            
+            recapTableContainer.innerHTML = '<p class="text-blue-500">Memuat data rekapitulasi...</p>';
+            
+            try {
+                const reviewsColPath = `/artifacts/${appId}/public/data/reviews`;
+                const q = query(collection(db, reviewsColPath));
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    recapTableContainer.innerHTML = '<p class="text-gray-500">Belum ada data penilaian yang masuk.</p>';
+                    return;
+                }
+
+                adminRecapData = []; // Kosongkan data lama
+                snapshot.forEach(doc => {
+                    adminRecapData.push(doc.data());
+                });
+
+                // Urutkan berdasarkan tanggal submit (terbaru dulu)
+                adminRecapData.sort((a, b) => (b.submittedAt?.seconds || 0) - (a.submittedAt?.seconds || 0));
+
+                renderRecapTable(adminRecapData);
+
+            } catch (error) {
+                console.error("Error loading admin data: ", error);
+                recapTableContainer.innerHTML = `<p class="text-red-500">Gagal memuat data: ${error.message}</p>`;
+            }
+        }
+
+        function renderRecapTable(reviews) {
+            let tableHtml = `
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200 shadow rounded-lg">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reviewer</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tanggal</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Jenis</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pelaksana</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Skor Total</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+            `;
+
+            reviews.forEach((review, index) => {
+                const reviewer = review.reviewerName || 'N/A';
+                const tanggal = review.reviewDate || (review.submittedAt ? new Date(review.submittedAt.seconds * 1000).toLocaleDateString('id-ID') : 'N/A');
+                const jenis = review.reviewType || 'N/A';
+                const pelaksana = review.project?.nama || 'N/A';
+                let skor = 'N/A';
+                
+                if (jenis === 'pkm' && review.totals) {
+                    skor = review.totals.totalKeseluruhan?.toFixed(2) || 'N/A';
+                } else if (jenis === 'penelitian') {
+                    skor = 'Komentar';
+                }
+
+                tableHtml += `
+                    <tr>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${reviewer}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${tanggal}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${jenis.toUpperCase()}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${pelaksana}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${jenis === 'pkm' ? 'text-blue-600' : 'text-gray-600'}">${skor}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <button onclick="showReviewDetails(${index})" class="text-indigo-600 hover:text-indigo-900">Detail</button>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            tableHtml += `
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            recapTableContainer.innerHTML = tableHtml;
+        }
+        
+        function showReviewDetails(index) {
+            const review = adminRecapData[index];
+            if (!review) return;
+
+            let detailHtml = `
+                <div class="text-left space-y-4">
+                    <p><strong>Reviewer:</strong> ${review.reviewerName}</p>
+                    <p><strong>Tanggal:</strong> ${review.reviewDate}</p>
+                    <p><strong>Jenis:</strong> ${review.reviewType?.toUpperCase()}</p>
+                    <hr>
+                    <h4 class="font-semibold">Detail Proyek</h4>
+                    <p><strong>Pelaksana:</strong> ${review.project?.nama}</p>
+                    <p><strong>Judul:</strong> ${review.project?.judul}</p>
+                    <p><strong>Skema:</strong> ${review.project?.skema}</p>
+                    <p><strong>Afiliasi:</strong> ${review.project?.afiliasi}</p>
+                    <hr>
+            `;
+
+            if (review.reviewType === 'pkm') {
+                detailHtml += `
+                    <h4 class="font-semibold">Skor PKM</h4>
+                    <p><strong>Skor Umum:</strong> ${review.totals?.totalUmum?.toFixed(2) || 0} / 60</p>
+                    <p><strong>Skor PKM:</strong> ${review.totals?.totalPKMSpesifik?.toFixed(2) || 0} / 40</p>
+                    <p><strong>Total Keseluruhan:</strong> ${review.totals?.totalKeseluruhan?.toFixed(2) || 0} / 100</p>
+                    <h4 class="font-semibold mt-2">Catatan Reviewer:</h4>
+                    <pre class="bg-gray-100 p-3 rounded-md text-sm whitespace-pre-wrap">${review.catatan || 'Tidak ada catatan.'}</pre>
+                `;
+            } else if (review.reviewType === 'penelitian') {
+                detailHtml += `
+                    <h4 class="font-semibold">Komentar Penelitian</h4>
+                    <ul class="list-disc list-inside space-y-2">
+                        <li><strong>Kemajuan Luaran:</strong> ${review.komentar?.kemajuanLuaran || ''}</li>
+                        <li><strong>Kesesuaian Usulan:</strong> ${review.komentar?.kesesuaianUsulan || ''}</li>
+                        <li><strong>Potensi Keberlanjutan:</strong> ${review.komentar?.potensiKeberlanjutan || ''}</li>
+                        <li><strong>Level TKT:</strong> ${review.komentar?.levelTKT || ''}</li>
+                        <li><strong>Serapan Anggaran:</strong> ${review.komentar?.serapanAnggaran || ''}</li>
+                    </ul>
+                    <h4 class="font-semibold mt-2">Catatan Umum:</h4>
+                    <pre class="bg-gray-100 p-3 rounded-md text-sm whitespace-pre-wrap">${review.catatan || 'Tidak ada catatan.'}</pre>
+                `;
+            }
+
+            detailHtml += '</div>';
+            showMessageModal('Detail Penilaian', detailHtml);
+        }
+        window.showReviewDetails = showReviewDetails;
+
+
+        // --- Fungsi Helper Data ---
+        async function seedDatabase(db, appId) {
+            const projectsColPath = `/artifacts/${appId}/public/data/projects`;
+            const projectsCol = collection(db, projectsColPath);
+            const snapshot = await getDocs(query(projectsCol));
+
+            if (!snapshot.empty) {
+                console.log('Database already seeded.');
+                return;
+            }
+
+            console.log('Seeding database...');
+            const dummyData = [
+                // Data Penelitian Baru
+                { 
+                    id: 'pnl1', 
+                    type: 'penelitian', 
+                    nama: 'Dr. Muhammad Ikhsan Setiawan, S.T., MT.', 
+                    nidn: '0701097503',
+                    judul: 'Digitalisasi Transportasi 5.0 melalui Robotic Fishery Frozen Supply guna meningkatkan Distribusi Pangan Perikanan di Kabupaten Demak', 
+                    afiliasi: 'Universitas Maritim AMNI Semarang',
+                    skema: 'Penelitian Fundamental Reguler',
+                    anggota: 4, 
+                    dana: '137.870.000'
+                },
+                { 
+                    id: 'pnl2', 
+                    type: 'penelitian', 
+                    nama: 'Dr. Adenanthera Lesmana Dewa, ST., MM.', 
+                    nidn: '0623087102',
+                    judul: 'Aplikasi Autonomous Solar Energy Fishing Ship, mendukung Kemandirian Pangan Perikanan di Desa Tertinggal Kabupaten Demak', 
+                    afiliasi: 'Universitas Maritim AMNI Semarang',
+                    skema: 'Penelitian Fundamental Reguler', // Skema PFR = Penelitian Fundamental Reguler
+                    anggota: 3, 
+                    dana: '124.070.000' 
+                },
+                { 
+                    id: 'pnl3', 
+                    type: 'penelitian', 
+                    nama: 'Dhanan Abimanto, S.Hum., M.Pd.', 
+                    nidn: '0631078702',
+                    judul: 'Analisis Korpus Bahasa Inggris Maritim untuk Pengembangan Kamus dan Model Kompetensi Komunikasi Teknis di Ruang Mesin Kapal', 
+                    afiliasi: 'Universitas Maritim AMNI Semarang',
+                    skema: 'Penelitian Fundamental Reguler',
+                    anggota: 2, 
+                    dana: '62.620.000' 
+                },
+                // Data PKM Baru
+                { 
+                    id: 'pkm1', 
+                    type: 'pkm', 
+                    nama: 'Sunu Arsy Pratomo, S.T., M.T', 
+                    nidn: '0615048505',
+                    judul: 'Peningkatan Pendapatan UMKM Mie Lidi Desa Tertinggal Banjarsari Kabupaten Demak Melalui Penggunaan Teknologi Portable Automatic IoT Blower Olahan Mie Lidi Terintegrasi Energi Solar Panel', 
+                    afiliasi: 'Universitas Maritim AMNI Semarang',
+                    skema: 'Skema Pemberdayaan Kemitraan Masyarakat',
+                    anggota: 2, 
+                    dana: '39.250.000' 
+                }
+            ];
+
+            for (const project of dummyData) {
+                await addDoc(projectsCol, project);
+            }
+            console.log('Database seeding complete.');
+        }
+
+        async function loadProjects(db, appId) {
+            // PERBAIKAN: Pastikan array tidak di-reset jika data sudah ada
+            if (dataPenelitian.length > 0 || dataPKM.length > 0) {
+                console.log("Data sudah dimuat sebelumnya.");
+                isDataLoaded = true;
+                updatePelaksanaListBasedOnData(); // Panggil update list
+                return;
+            }
+            
+            console.log("Memuat data proyek dari Firestore...");
+            dataPenelitian = [];
+            dataPKM = [];
+            const projectsColPath = `/artifacts/${appId}/public/data/projects`;
+            
+            try {
+                const snapshot = await getDocs(query(collection(db, projectsColPath)));
+                
+                if (snapshot.empty) {
+                    console.warn("Koleksi 'projects' kosong.");
+                    isDataLoaded = true; // Tandai selesai walau kosong
+                    return;
+                }
+
+                snapshot.forEach(doc => {
+                    const data = { ...doc.data(), firestoreId: doc.id };
+                    data.id = data.id || doc.id; 
+                    if (data.type === 'penelitian') {
+                        dataPenelitian.push(data);
+                    } else if (data.type === 'pkm') {
+                        dataPKM.push(data);
+                    }
+                });
+
+                dataPenelitian.sort((a, b) => a.nama.localeCompare(b.nama));
+                dataPKM.sort((a, b) => a.nama.localeCompare(b.nama));
+                
+                isDataLoaded = true; // Tandai data selesai dimuat
+                console.log('Projects loaded and sorted:', { penelitian: dataPenelitian.length, pkm: dataPKM.length });
+
+                // PERBAIKAN: Panggil fungsi ini SETELAH data dimuat
+                updatePelaksanaListBasedOnData();
+
+            } catch (error) {
+                console.error("Gagal memuat data projects:", error);
+                authStatus.innerHTML += `<br><span class="text-red-500">Error: Gagal memuat data proyek. Cek Firestore Rules.</span>`;
+            }
+        }
+
+        // --- Fungsi Logika Aplikasi (Reviewer) ---
+
+        function getRadioValue(name) {
+            const radio = document.querySelector(`input[name="${name}"]:checked`);
+            return radio ? parseFloat(radio.value) : 0;
+        }
+
+        function calculatePKMScore() {
+            // Indikator Umum (60 Poin)
+            const v1A = getRadioValue('1A');
+            const v1B = getRadioValue('1B');
+            const v1C = getRadioValue('1C');
+            const v1D = getRadioValue('1D');
+            const v1E = getRadioValue('1E');
+            const skor1 = (v1A + v1B + v1C + v1D + v1E) / 10;
+
+            const v2A = getRadioValue('2A');
+            const skor2 = v2A / 10;
+
+            const v3A = getRadioValue('3A');
+            const skor3 = v3A / 5;
+
+            const v4A = getRadioValue('4A');
+            const v4B = getRadioValue('4B');
+            const v4C = getRadioValue('4C');
+            const v4D = getRadioValue('4D');
+            const v4E = getRadioValue('4E');
+            const v4F = getRadioValue('4F');
+            const v4G = getRadioValue('4G');
+            const v4H = getRadioValue('4H');
+            const skor4 = (v4A + v4B + v4C + v4D + v4E + v4F + v4G + v4H) / 8;
+
+            const v5A = getRadioValue('5A');
+            const v5B = getRadioValue('5B');
+            const v5C = getRadioValue('5C');
+            const skor5 = (v5A + v5B + v5C) / 10;
+
+            const v6A = getRadioValue('6A');
+            const v6B = getRadioValue('6B');
+            const v6C = getRadioValue('6C');
+            const skor6 = (v6A + v6B + v6C) / 10;
+
+            const totalUmum = skor1 + skor2 + skor3 + skor4 + skor5 + skor6;
+
+            // Indikator PKM (40 Poin)
+            const vP1A = getRadioValue('P1A');
+            const skorP1 = vP1A / 10;
+
+            const vP2A = getRadioValue('P2A');
+            const vP2B = getRadioValue('P2B');
+            const vP2C = getRadioValue('P2C');
+            const vP2D = getRadioValue('P2D');
+            const vP2E = getRadioValue('P2E');
+            const vP2F = getRadioValue('P2F');
+            const vP2G = getRadioValue('P2G');
+            const skorP2 = (vP2A + vP2B + vP2C + vP2D + vP2E + vP2F + vP2G) / 10;
+
+            const totalPKMSpesifik = skorP1 + skorP2;
+
+            // Total Keseluruhan
+            const totalKeseluruhan = totalUmum + totalPKMSpesifik;
+
+            // Update Tampilan Skor
+            // PERBAIKAN: Cek jika elemen ada sebelum set textContent
+            if (totalScoreUmumDisplay) {
+                totalScoreUmumDisplay.textContent = totalUmum.toFixed(2);
+            }
+            if (totalScorePKMSpesifikDisplay) {
+                totalScorePKMSpesifikDisplay.textContent = totalPKMSpesifik.toFixed(2);
+            }
+            if (totalScorePKMDisplay) {
+                totalScorePKMDisplay.textContent = totalKeseluruhan.toFixed(2);
+            }
+        }
+
+        function hideAllSections() {
+            pelaksanaContainer.style.display = 'none';
+            dataDisplayContainer.style.display = 'none';
+            formPenelitianContainer.style.display = 'none';
+            formPKMContainer.style.display = 'none';
+        }
+
+        function populatePelaksanaSelect(data) {
+            pelaksanaSelect.innerHTML = ''; // Selalu kosongkan dulu
+            
+            let defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = '-- Pilih dari Daftar --';
+            pelaksanaSelect.appendChild(defaultOption);
+
+            data.forEach(item => {
+                let option = document.createElement('option');
+                option.value = item.id; // Gunakan ID unik (firestoreId atau id dari data)
+                option.textContent = item.nama;
+                option.dataset.fullData = JSON.stringify(item); // Simpan semua data di dataset
+                pelaksanaSelect.appendChild(option);
+            });
+        }
+        
+        // --- Fungsi Ekspor PDF ---
+        
+        // Fungsi utama generate PDF
+        function generatePDF(reviewData) { 
+             console.log("Memulai generatePDF..."); // Log 1: Mulai
+            const doc = new jsPDF();
+            const project = reviewData.project;
+             if (!project) {
+                 console.error("Data proyek tidak ditemukan dalam reviewData.");
+                 showMessageModal('Error PDF', 'Data proyek tidak ditemukan untuk generate PDF.');
+                 return; // Hentikan jika data proyek tidak ada
+             }
+            
+            // Tambahkan Header (selalu gunakan header teks)
+            let startY = addHeaderAndLogo(doc, project.type); 
+             console.log("Setelah addHeaderAndLogo, startY:", startY); // Log 2: Y setelah header
+
+            // Tambahkan Detail Proyek
+            startY = addProjectDetails(doc, project, startY); 
+             console.log("Setelah addProjectDetails, startY:", startY); // Log 3: Y setelah detail
+            
+            // Tambahkan Tabel Penilaian berdasarkan Jenis
+            if (reviewData.reviewType === 'penelitian') {
+                 console.log("Memanggil addPenelitianTable..."); // Log 4a: Panggil tabel penelitian
+                startY = addPenelitianTable(doc, reviewData, startY);
+                 console.log("Setelah addPenelitianTable, startY:", startY); // Log 5a: Y setelah tabel penelitian
+            } else if (reviewData.reviewType === 'pkm') {
+                 console.log("Memanggil addPKMTable..."); // Log 4b: Panggil tabel PKM
+                startY = addPKMTable(doc, reviewData, startY);
+                 console.log("Setelah addPKMTable, startY:", startY); // Log 5b: Y setelah tabel PKM
+            } else {
+                 console.error("Tipe review tidak dikenal:", reviewData.reviewType); // Log jika tipe tidak cocok
+                 return; // Hentikan jika tipe tidak dikenal
+            }
+
+            // Tambahkan Area Tanda Tangan
+            addSignature(doc, reviewData.reviewerName, reviewData.reviewDate, startY); 
+
+             console.log("PDF siap disimpan."); // Log 6: Siap simpan
+            // Simpan PDF
+            const fileName = `Borang_Monev_${project.nama?.replace(/[^a-zA-Z0-9]/g, '_') || 'TanpaNama'}.pdf`; // Perbaikan nama file
+            doc.save(fileName);
+        }
+
+        // Helper PDF: Header
+        function addHeaderAndLogo(doc, type) { 
+            const margin = 15;
+            let currentY = 15;
+            currentY = addTextHeader(doc, type, currentY, margin);
+            return currentY; 
+        }
+        
+        // Helper function untuk header teks
+        function addTextHeader(doc, type, currentY, margin){
+             doc.setFontSize(12).setFont(undefined, 'bold');
+            doc.text('INDIKATOR PENILAIAN MONITORING DAN EVALUASI INTERNAL PERGURUAN TINGGI', doc.internal.pageSize.getWidth() / 2, currentY, { align: 'center' });
+            currentY += 7;
+
+            let skemaTitle = '';
+            let skemaDetails = '';
+
+            if (type === 'penelitian') {
+                skemaTitle = 'SKEMA RISET DASAR';
+                skemaDetails = '(Kolaborasi Penelitian Strategis, Penelitian Disertasi Doktor, Penelitian Dosen Pemula, Penelitian Fundamental – Reguler, Penelitian Kerjasama Luar Negeri – Nusantara, Penelitian Pendidikan Magister menuju Doktor untuk Sarjana Unggul)';
+            } else { 
+                skemaTitle = 'PROGRAM PENGABDIAN KEPADA MASYARAKAT';
+                 skemaDetails = ''; // Kosongkan untuk PKM
+            }
+            
+            doc.setFontSize(12).setFont(undefined, 'bold');
+            doc.text(skemaTitle, doc.internal.pageSize.getWidth() / 2, currentY, { align: 'center' });
+            currentY += 5;
+
+            if (skemaDetails) {
+                 doc.setFontSize(9).setFont(undefined, 'normal');
+                 const splitSkemaDetails = doc.splitTextToSize(skemaDetails, doc.internal.pageSize.getWidth() - (margin * 2));
+                 doc.text(splitSkemaDetails, doc.internal.pageSize.getWidth() / 2, currentY, { align: 'center' });
+                 currentY += (splitSkemaDetails.length * 4); 
+            }
+             return currentY + 5; 
+        }
+
+        // Helper PDF: Detail Proyek
+        function addProjectDetails(doc, project, startY) { 
+            const detailBody = [
+                [project.type === 'penelitian' ? 'Judul Penelitian' : 'Judul Kegiatan', `: ${project.judul || ''}`],
+                ['Skema', `: ${project.skema || ''}`],
+                ['Perguruan Tinggi', `: ${project.afiliasi || ''}`], 
+                [project.type === 'penelitian' ? 'Ketua Peneliti' : 'Ketua Pelaksana', ''],
+                ['  Nama Lengkap', `: ${project.nama || ''}`],
+                ['  NIDN', `: ${project.nidn || ''}`],
+                ['Jumlah Anggota', `: ${project.anggota ?? ''} orang`],
+                ['Jumlah Dana', `: Rp ${project.dana || ''}`]
+            ];
+
+            doc.autoTable({
+                body: detailBody,
+                startY: startY, 
+                theme: 'plain',
+                styles: {
+                    fontSize: 10,
+                    cellPadding: { top: 0.5, right: 2, bottom: 0.5, left: 0 }
+                },
+                columnStyles: {
+                    0: { fontStyle: 'bold', cellWidth: 45 }, 
+                    1: { fontStyle: 'normal' }
+                },
+                 didParseCell: (data) => {
+                    if (data.row.index === 0 && data.column.index === 1) {
+                        data.cell.styles.cellWidth = 135; 
+                    }
+                    if ((data.row.index === 4 || data.row.index === 5) && data.column.index === 0) {
+                         data.cell.styles.fontStyle = 'normal'; 
+                    }
+                    if (data.row.index === 3 && data.column.index === 0) {
+                         data.cell.styles.fontStyle = 'bold'; 
+                    }
+                }
+            });
+            
+            return doc.autoTable.previous.finalY; 
+        }
+
+        // Helper PDF: Tabel Penelitian
+        function addPenelitianTable(doc, reviewData, startY) {
+            const head = [['No', 'Komponen Penilaian', 'Komentar Reviewer']];
+            const k = reviewData.komentar || {}; // Pastikan komentar adalah objek
+            const body = [
+                ['1', 'Kemajuan ketercapaian luaran wajib yang dijanjikan', k.kemajuanLuaran || ''],
+                ['2', 'Kesesuaian penelitian dengan usulan', k.kesesuaianUsulan || ''],
+                ['3', 'Potensi keberlanjutan hasil penelitian', k.potensiKeberlanjutan || ''],
+                ['4', 'Level TKT saat ini (monev)', k.levelTKT || ''],
+                ['5', 'Persentase serapan anggaran belanja', k.serapanAnggaran || '']
+            ];
+
+            doc.autoTable({
+                head: head,
+                body: body,
+                startY: startY + 5, 
+                theme: 'grid',
+                headStyles: { fillColor: [230, 230, 230], textColor: 0, fontStyle: 'bold' },
+                columnStyles: {
+                    0: { cellWidth: 10, halign: 'center' },
+                    1: { cellWidth: 70 },
+                    2: { cellWidth: 'auto' }
+                }
+            });
+            
+            let finalY = doc.autoTable.previous.finalY;
+
+            // Tambahkan Catatan
+            doc.setFontSize(10).setFont(undefined, 'bold');
+            doc.text('Catatan:', 15, finalY + 10);
+            doc.setFontSize(10).setFont(undefined, 'normal');
+            const catatan = reviewData.catatan || 'Tidak ada catatan.';
+            const catatanLines = doc.splitTextToSize(catatan, 180); 
+            doc.text(catatanLines, 15, finalY + 15);
+            
+            return finalY + 15 + (catatanLines.length * 4); 
+        }
+
+        // Helper PDF: Tabel PKM
+        function addPKMTable(doc, reviewData, startY) {
+             const headUmum = [['No', 'Komponen', 'Skor Komp (Max 10)']];
+             const t = reviewData.totals || {}; // Pastikan totals adalah objek
+
+             // PERBAIKAN: Hitung skor komponen dari total, bukan skor mentah
+             const s = reviewData.scores || {};
+             const skorKomp1 = ((s['1A'] ?? 0) + (s['1B'] ?? 0) + (s['1C'] ?? 0) + (s['1D'] ?? 0) + (s['1E'] ?? 0)) / 10;
+             const skorKomp2 = (s['2A'] ?? 0) / 10;
+             const skorKomp3 = (s['3A'] ?? 0) / 5;
+             const skorKomp4 = ((s['4A'] ?? 0) + (s['4B'] ?? 0) + (s['4C'] ?? 0) + (s['4D'] ?? 0) + (s['4E'] ?? 0) + (s['4F'] ?? 0) + (s['4G'] ?? 0) + (s['4H'] ?? 0)) / 8;
+             const skorKomp5 = ((s['5A'] ?? 0) + (s['5B'] ?? 0) + (s['5C'] ?? 0)) / 10;
+             const skorKomp6 = ((s['6A'] ?? 0) + (s['6B'] ?? 0) + (s['6C'] ?? 0)) / 10;
+
+             const bodyUmum = [
+                 ['1', 'Kehadiran dan Pelaksanaan', skorKomp1.toFixed(2)],
+                 ['2', 'Artikel publikasi berita media massa', skorKomp2.toFixed(2)],
+                 ['3', 'Keterlibatan Mahasiswa', skorKomp3.toFixed(2)],
+                 ['4', 'Karya Audio Visual (Video)', skorKomp4.toFixed(2)],
+                 ['5', 'Karya Visual (Poster)', skorKomp5.toFixed(2)],
+                 ['6', 'Penggunaan Anggaran 80%', skorKomp6.toFixed(2)],
+                 [{ content: 'Total Skor Umum (Maks 60)', colSpan: 2, styles: { fontStyle: 'bold', halign: 'right' } }, { content: t.totalUmum?.toFixed(2) || '0.00', styles: { fontStyle: 'bold' } }]
+             ];
+
+             doc.setFontSize(11).setFont(undefined, 'bold');
+             doc.text('INDIKATOR PENILAIAN UMUM (60 POINT)', 15, startY + 5);
+             
+             doc.autoTable({
+                head: headUmum,
+                body: bodyUmum,
+                startY: startY + 10,
+                theme: 'grid',
+                headStyles: { fillColor: [220, 220, 220], textColor: 0, fontStyle: 'bold', fontSize: 9 },
+                 bodyStyles: { fontSize: 9 },
+                columnStyles: {
+                    0: { cellWidth: 10, halign: 'center' }, 
+                    1: { cellWidth: 110 }, 
+                    2: { halign: 'center', fontStyle: 'bold'} 
+                },
+                 didDrawCell: (data) => {
+                     if (data.section === 'body' && data.row.index === 6) { 
+                         data.cell.styles.fillColor = '#e0e7ff'; 
+                         data.cell.styles.fontSize = 10;
+                     }
+                 }
+            });
+            let finalY = doc.autoTable.previous.finalY;
+
+             // Data Skor PKM Spesifik
+             const headPKM = [['No', 'Komponen', 'Skor Komp (Variatif)']];
+             
+             const skorKompP1 = (s['P1A'] ?? 0) / 10; 
+             const skorKompP2 = ((s['P2A'] ?? 0) + (s['P2B'] ?? 0) + (s['P2C'] ?? 0) + (s['P2D'] ?? 0) + (s['P2E'] ?? 0) + (s['P2F'] ?? 0) + (s['P2G'] ?? 0)) / 10; 
+            
+             const bodyPKM = [
+                 ['1', 'Publikasi Jurnal SINTA 1-6 (Maks 10)', skorKompP1.toFixed(2)],
+                 ['2', 'Pemberdayaan dan Keberdayaan (Maks 30)', skorKompP2.toFixed(2)], 
+                 [{ content: 'Total Skor PKM (Maks 40)', colSpan: 2, styles: { fontStyle: 'bold', halign: 'right' } }, { content: t.totalPKMSpesifik?.toFixed(2) || '0.00', styles: { fontStyle: 'bold' } }]
+             ];
+
+             doc.setFontSize(11).setFont(undefined, 'bold');
+             doc.text('INDIKATOR PENILAIAN PKM (40 POINT)', 15, finalY + 10);
+
+             doc.autoTable({
+                 head: headPKM,
+                 body: bodyPKM,
+                 startY: finalY + 15,
+                 theme: 'grid',
+                 headStyles: { fillColor: [220, 220, 220], textColor: 0, fontStyle: 'bold', fontSize: 9 },
+                 bodyStyles: { fontSize: 9 },
+                 columnStyles: {
+                     0: { cellWidth: 10, halign: 'center' }, 
+                     1: { cellWidth: 110 }, 
+                     2: { halign: 'center', fontStyle: 'bold'} 
+                 },
+                 didDrawCell: (data) => {
+                     if (data.section === 'body' && data.row.index === 2) { 
+                         data.cell.styles.fillColor = '#ccfbf1'; 
+                         data.cell.styles.fontSize = 10;
+                     }
+                 }
+             });
+             finalY = doc.autoTable.previous.finalY;
+
+             // Total Keseluruhan
+             doc.setFontSize(12).setFont(undefined, 'bold');
+             doc.text(`TOTAL NILAI KESELURUHAN (UMUM + PKM): ${t.totalKeseluruhan?.toFixed(2) || '0.00'}`, 15, finalY + 10);
+             finalY += 15;
+
+            // Tambahkan Catatan
+            doc.setFontSize(10).setFont(undefined, 'bold');
+            doc.text('Catatan Reviewer:', 15, finalY + 5); 
+            doc.setFontSize(10).setFont(undefined, 'normal');
+            const catatan = reviewData.catatan || 'Tidak ada catatan.';
+            const catatanLines = doc.splitTextToSize(catatan, 180);
+            doc.text(catatanLines, 15, finalY + 10); 
+            
+            return finalY + 10 + (catatanLines.length * 4); 
+        }
+
+        // Helper PDF: Tanda Tangan
+        function addSignature(doc, reviewerName, reviewDate, currentY) {
+            const pageHeight = doc.internal.pageSize.height;
+            const signatureHeight = 50; 
+            let startY;
+
+            // Cek apakah perlu halaman baru
+            if (currentY + signatureHeight > pageHeight - 15) { 
+                 doc.addPage();
+                 startY = 40; 
+            } else {
+                 // Coba posisikan di bawah, tapi tidak tumpang tindih
+                 startY = pageHeight - signatureHeight; 
+                 if (currentY + signatureHeight < startY) {
+                     // Ada gap besar, pindahkan ke bawah konten
+                     startY = currentY + 15; 
+                 }
+            }
+             console.log("Posisi Y tanda tangan:", startY); 
+
+            const date = reviewDate ? 
+                new Date(reviewDate + 'T00:00:00').toLocaleDateString('id-ID', {
+                    day: 'numeric', month: 'long', year: 'numeric'
+                }) : 
+                new Date().toLocaleDateString('id-ID', {
+                    day: 'numeric', month: 'long', year: 'numeric'
+                });
+
+            doc.setFontSize(10).setFont(undefined, 'normal');
+            doc.text(`Semarang, ${date}`, 195, startY, { align: 'right' });
+            doc.text('Reviewer,', 195, startY + 5, { align: 'right' });
+            
+            doc.text(`( ${reviewerName || '...................................'} )`, 195, startY + 30, { align: 'right' });
+        }
+        
+        // PERBAIKAN: Fungsi baru untuk update list pelaksana
+        function updatePelaksanaListBasedOnData() {
+            if (!isDataLoaded || !kegiatanSelect) {
+                return; // Jangan lakukan apa-apa jika data belum siap atau DOM belum siap
+            }
+            
+            const jenisKegiatan = kegiatanSelect.value;
+            console.log(`Updating list for: ${jenisKegiatan}`);
+
+            if (jenisKegiatan === 'penelitian') {
+                pelaksanaHeader.textContent = 'Pilih Peneliti';
+                populatePelaksanaSelect(dataPenelitian);
+                pelaksanaContainer.style.display = 'block';
+            } else if (jenisKegiatan === 'pkm') {
+                pelaksanaHeader.textContent = 'Pilih Pelaksana PKM';
+                populatePelaksanaSelect(dataPKM);
+                pelaksanaContainer.style.display = 'block';
+            } else {
+                pelaksanaContainer.style.display = 'none'; // Sembunyikan jika "--Pilih--"
+            }
+        }
+
+
+        // --- Fungsi Inisialisasi DOM dan Event Listeners ---
+        function initializeDOM() {
+            // --- Elemen DOM ---
+            authStatus = document.getElementById('authStatus');
+            messageModal = document.getElementById('messageModal');
+            modalTitle = document.getElementById('modalTitle');
+            modalMessage = document.getElementById('modalMessage');
+            modalCloseButton = document.getElementById('modalCloseButton');
+            
+            loginContainer = document.getElementById('loginContainer');
+            reviewerContainer = document.getElementById('reviewerContainer');
+            adminContainer = document.getElementById('adminContainer');
+
+            loginBtn = document.getElementById('loginBtn');
+            showReviewerFormBtn = document.getElementById('showReviewerFormBtn');
+            usernameInput = document.getElementById('username');
+            passwordInput = document.getElementById('password');
+            loginError = document.getElementById('loginError');
+
+            backToLoginBtn = document.getElementById('backToLoginBtn'); 
+            logoutBtn = document.getElementById('logoutBtn');
+            refreshAdminDataBtn = document.getElementById('refreshAdminDataBtn');
+            recapTableContainer = document.getElementById('recapTableContainer');
+
+            kegiatanSelect = document.getElementById('kegiatanSelect');
+            pelaksanaContainer = document.getElementById('pelaksanaContainer');
+            pelaksanaHeader = document.getElementById('pelaksanaHeader');
+            pelaksanaSelect = document.getElementById('pelaksanaSelect');
+            dataDisplayContainer = document.getElementById('dataDisplayContainer');
+            dataDisplay = document.getElementById('dataDisplay');
+            mulaiReviewButton = document.getElementById('mulaiReviewButton');
+            formPenelitianContainer = document.getElementById('formPenelitianContainer');
+            formPKMContainer = document.getElementById('formPKMContainer');
+            submitPenelitianBtn = document.getElementById('submitPenelitianBtn');
+            submitPKMBtn = document.getElementById('submitPKMBtn');
+            monevForm = document.getElementById('monevForm');
+            
+            pkmScoreInputs = document.querySelectorAll('.pkm-score-input');
+            totalScorePKMDisplay = document.getElementById('totalScorePKM');
+            totalScoreUmumDisplay = document.getElementById('totalScoreUmum');
+            totalScorePKMSpesifikDisplay = document.getElementById('totalScorePKMSpesifik');
+
+            // --- Event Listeners ---
+            modalCloseButton.addEventListener('click', hideMessageModal);
+
+            loginBtn.addEventListener('click', () => {
+                const user = usernameInput.value;
+                const pass = passwordInput.value;
+                if (user === 'admin' && pass === '123456789') {
+                    showAdminPanel();
+                } else {
+                    loginError.textContent = 'Username atau password salah.';
+                }
+            });
+            showReviewerFormBtn.addEventListener('click', showReviewerForm);
+            logoutBtn.addEventListener('click', showLoginScreen);
+            backToLoginBtn.addEventListener('click', showLoginScreen); // Ini tombol "Login Admin"
+            refreshAdminDataBtn.addEventListener('click', loadAdminData);
+
+            // Listener Tombol PDF (SAMA UNTUK KEDUANYA)
+            document.body.addEventListener('click', (e) => {
+                if (e.target.id === 'downloadPdfBtn') {
+                    console.log("Download PDF button clicked."); // Log 1: Tombol diklik
+                    if (lastSubmittedReview) {
+                        console.log("lastSubmittedReview data:", JSON.stringify(lastSubmittedReview, null, 2)); // Log 2: Data yang akan dipakai
+                        e.target.textContent = 'Membuat PDF...';
+                        e.target.disabled = true;
+                        try {
+                            console.log("Memanggil generatePDF..."); // Log 3: Panggil generatePDF
+                            generatePDF(lastSubmittedReview); 
+                            console.log("generatePDF selesai."); // Log 4: Selesai generatePDF
+                        } catch (err) {
+                            console.error('PDF generation error:', err); // Log jika ada error
+                            showMessageModal('Error PDF', 'Gagal membuat PDF: ' + err.message);
+                        } finally { 
+                            e.target.textContent = 'Download PDF Penilaian';
+                            e.target.disabled = false;
+                        }
+                    } else {
+                        console.error("lastSubmittedReview is null."); // Log jika data tidak ada
+                        showMessageModal('Error PDF', 'Data review terakhir tidak ditemukan untuk generate PDF.');
+                    }
+                }
+            });
+
+            kegiatanSelect.addEventListener('change', (e) => {
+                // PERBAIKAN: Panggil fungsi update, jangan duplikat logika
+                hideAllSections(); 
+                updatePelaksanaListBasedOnData();
+            });
+
+            pelaksanaSelect.addEventListener('change', (e) => {
+                const selectedId = e.target.value;
+                const jenisKegiatan = kegiatanSelect.value;
+                
+                formPenelitianContainer.style.display = 'none';
+                formPKMContainer.style.display = 'none';
+
+                if (!selectedId) {
+                    dataDisplayContainer.style.display = 'none';
+                    return;
+                }
+                
+                // PERBAIKAN: Gunakan data array yang sudah terisi
+                const data = (jenisKegiatan === 'penelitian') ? dataPenelitian : dataPKM;
+                const selectedData = data.find(item => item.id === selectedId);
+
+                if (selectedData) {
+                    dataDisplay.innerHTML = `
+                        <p><strong class="font-semibold w-32 inline-block">Judul Kegiatan:</strong> ${selectedData.judul || '-'}</p>
+                        <p><strong class="font-semibold w-32 inline-block">Nama Pelaksana:</strong> ${selectedData.nama || '-'}</p>
+                        <p><strong class="font-semibold w-32 inline-block">Afiliasi:</strong> ${selectedData.afiliasi || '-'}</p>
+                        <p><strong class="font-semibold w-32 inline-block">Skema:</strong> ${selectedData.skema || '-'}</p>
+                        <p><strong class="font-semibold w-32 inline-block">NIDN:</strong> ${selectedData.nidn || '-'}</p>
+                        <p><strong class="font-semibold w-32 inline-block">Jumlah Anggota:</strong> ${selectedData.anggota ?? '-'} orang</p>
+                        <p><strong class="font-semibold w-32 inline-block">Jumlah Dana:</strong> Rp ${selectedData.dana || '-'}</p>
+                    `;
+                    dataDisplayContainer.style.display = 'block';
+                } else {
+                     console.error("Data terpilih tidak ditemukan untuk ID:", selectedId);
+                     dataDisplayContainer.style.display = 'none';
+                }
+            });
+
+            mulaiReviewButton.addEventListener('click', () => {
+                const jenisKegiatan = kegiatanSelect.value;
+                 // Validasi tambahan: Pastikan pelaksana sudah dipilih
+                 const selectedPelaksana = pelaksanaSelect.value;
+                 if (!selectedPelaksana) {
+                     showMessageModal('Peringatan', 'Mohon pilih Peneliti atau Pelaksana PKM terlebih dahulu.');
+                     return;
+                 }
+
+                if (jenisKegiatan === 'penelitian') {
+                    formPenelitianContainer.style.display = 'block';
+                    formPKMContainer.style.display = 'none';
+                } else if (jenisKegiatan === 'pkm') {
+                    formPenelitianContainer.style.display = 'none';
+                    formPKMContainer.style.display = 'block';
+                    calculatePKMScore(); // Hitung skor awal saat form PKM ditampilkan
+                }
+            });
+
+            pkmScoreInputs.forEach(input => {
+                input.addEventListener('change', calculatePKMScore);
+            });
+
+            // Listener Submit Form PKM
+            submitPKMBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                console.log("Submit PKM button clicked."); // Log submit PKM
+                
+                // Validasi
+                const reviewerName = document.getElementById('reviewerName').value;
+                const reviewDate = document.getElementById('reviewDate').value;
+                if (!reviewerName || !reviewDate) {
+                    showMessageModal('Gagal', 'Mohon isi "Nama Lengkap dan Gelar" dan "Tanggal Kegiatan" di Bagian 1.');
+                    return;
+                }
+                const selectedOption = pelaksanaSelect.options[pelaksanaSelect.selectedIndex];
+                 if (!selectedOption || !selectedOption.value || selectedOption.value === "") { // Periksa juga value kosong
+                    showMessageModal('Gagal', 'Mohon pilih Pelaksana PKM terlebih dahulu di Bagian 2.');
+                    return;
+                }
+
+                submitPKMBtn.disabled = true;
+                submitPKMBtn.textContent = 'Menyimpan...';
+                lastSubmittedReview = null; // Reset dulu
+
+                try {
+                    const projectData = JSON.parse(selectedOption.dataset.fullData || '{}');
+                    if (!projectData || !projectData.id) {
+                         throw new Error("Data proyek terpilih tidak valid.");
+                    }
+                    console.log("Project Data (PKM):", projectData); // Log data proyek
+                    
+                    const scores = {
+                        '1A': getRadioValue('1A'), '1B': getRadioValue('1B'), '1C': getRadioValue('1C'), '1D': getRadioValue('1D'), '1E': getRadioValue('1E'),
+                        '2A': getRadioValue('2A'), '3A': getRadioValue('3A'),
+                        '4A': getRadioValue('4A'), '4B': getRadioValue('4B'), '4C': getRadioValue('4C'), '4D': getRadioValue('4D'), '4E': getRadioValue('4E'), '4F': getRadioValue('4F'), '4G': getRadioValue('4G'), '4H': getRadioValue('4H'),
+                        '5A': getRadioValue('5A'), '5B': getRadioValue('5B'), '5C': getRadioValue('5C'),
+                        '6A': getRadioValue('6A'), '6B': getRadioValue('6B'), '6C': getRadioValue('6C'),
+                        'P1A': getRadioValue('P1A'),
+                        'P2A': getRadioValue('P2A'), 'P2B': getRadioValue('P2B'), 'P2C': getRadioValue('P2C'), 'P2D': getRadioValue('P2D'), 'P2E': getRadioValue('P2E'), 'P2F': getRadioValue('P2F'), 'P2G': getRadioValue('P2G'),
+                    };
+                    
+                     // Panggil calculatePKMScore sekali lagi untuk memastikan nilai terbaru
+                    calculatePKMScore(); 
+                    const totals = {
+                        totalUmum: parseFloat(totalScoreUmumDisplay.textContent),
+                        totalPKMSpesifik: parseFloat(totalScorePKMSpesifikDisplay.textContent),
+                        totalKeseluruhan: parseFloat(totalScorePKMDisplay.textContent)
+                    };
+                    const catatan = document.getElementById('catatanPKM').value;
+
+                    const reviewDocument = {
+                        reviewerName: reviewerName, reviewDate: reviewDate, reviewerUserId: userId,
+                        submittedAt: Timestamp.now(), reviewType: 'pkm',
+                        project: projectData, scores: scores, totals: totals, catatan: catatan
+                    };
+                    
+                    console.log("Review Document (PKM) to save:", reviewDocument); // Log dokumen yang akan disimpan
+                    lastSubmittedReview = reviewDocument; // Simpan untuk PDF SEBELUM dikirim ke DB
+
+                    const reviewsColPath = `/artifacts/${appId}/public/data/reviews`;
+                    const docRef = await addDoc(collection(db, reviewsColPath), reviewDocument);
+                    console.log("Document written with ID: ", docRef.id); // Log ID dokumen setelah disimpan
+                    
+                    showMessageModal('Sukses!', 'Data penilaian PKM telah berhasil disimpan. <br><br> <button id="downloadPdfBtn" class="button-pdf w-full">Download PDF Penilaian</button>');
+                    
+                    monevForm.reset();
+                    calculatePKMScore(); // Reset skor tampilan
+                    hideAllSections();
+                    kegiatanSelect.value = '';
+
+                } catch (error) {
+                    console.error("Error adding PKM document: ", error); // Log error lebih detail
+                    showMessageModal('Error!', 'Terjadi kesalahan saat menyimpan data: ' + error.message);
+                     lastSubmittedReview = null; 
+                } finally {
+                    submitPKMBtn.disabled = false;
+                    submitPKMBtn.textContent = 'Submit Penilaian PKM';
+                }
+            });
+
+            // Listener Submit Form Penelitian
+            submitPenelitianBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                console.log("Submit Penelitian button clicked."); // Log submit Penelitian
+                
+                // Validasi
+                const reviewerName = document.getElementById('reviewerName').value;
+                const reviewDate = document.getElementById('reviewDate').value;
+                if (!reviewerName || !reviewDate) {
+                    showMessageModal('Gagal', 'Mohon isi "Nama Lengkap dan Gelar" dan "Tanggal Kegiatan" di Bagian 1.');
+                    return;
+                }
+                const selectedOption = pelaksanaSelect.options[pelaksanaSelect.selectedIndex];
+                 if (!selectedOption || !selectedOption.value || selectedOption.value === "") { // Periksa juga value kosong
+                    showMessageModal('Gagal', 'Mohon pilih Peneliti terlebih dahulu di Bagian 2.');
+                    return;
+                }
+
+                submitPenelitianBtn.disabled = true;
+                submitPenelitianBtn.textContent = 'Menyimpan...';
+                lastSubmittedReview = null; // Reset dulu
+
+                try {
+                    const projectData = JSON.parse(selectedOption.dataset.fullData || '{}');
+                     if (!projectData || !projectData.id) {
+                         throw new Error("Data proyek terpilih tidak valid.");
+                    }
+                    console.log("Project Data (Penelitian):", projectData); // Log data proyek
+                    
+                    const komentar = {
+                        kemajuanLuaran: document.getElementById('penelitian_1').value,
+                        kesesuaianUsulan: document.getElementById('penelitian_2').value,
+                        potensiKeberlanjutan: document.getElementById('penelitian_3').value,
+                        levelTKT: document.getElementById('penelitian_4').value,
+                        serapanAnggaran: document.getElementById('penelitian_5').value,
+                    };
+                    const catatanUmum = document.getElementById('catatanPenelitian').value;
+                    
+                    const reviewDocument = {
+                        reviewerName: reviewerName, reviewDate: reviewDate, reviewerUserId: userId,
+                        submittedAt: Timestamp.now(), reviewType: 'penelitian',
+                        project: projectData, komentar: komentar, catatan: catatanUmum
+                    };
+
+                    console.log("Review Document (Penelitian) to save:", reviewDocument); // Log dokumen yang akan disimpan
+                    lastSubmittedReview = reviewDocument; // Simpan untuk PDF SEBELUM dikirim ke DB
+
+                    const reviewsColPath = `/artifacts/${appId}/public/data/reviews`;
+                    const docRef = await addDoc(collection(db, reviewsColPath), reviewDocument);
+                    console.log("Document written with ID: ", docRef.id); // Log ID dokumen setelah disimpan
+
+                    showMessageModal('Sukses!', 'Data penilaian Penelitian telah berhasil disimpan. <br><br> <button id="downloadPdfBtn" class="button-pdf w-full">Download PDF Penilaian</button>');
+                    
+                    monevForm.reset();
+                    hideAllSections();
+                    kegiatanSelect.value = '';
+                    
+                } catch (error) {
+                    console.error("Error adding Penelitian document: ", error); // Log error lebih detail
+                    showMessageModal('Error!', 'Terjadi kesalahan saat menyimpan data: ' + error.message);
+                    lastSubmittedReview = null; 
+                } finally {
+                    submitPenelitianBtn.disabled = false;
+                    submitPenelitianBtn.textContent = 'Submit Penilaian Penelitian';
+                }
+            });
+        }
+        
+        // --- INISIALISASI FIREBASE ---
+        async function initializeFirebase() {
+            if (!firebaseConfig.apiKey) {
+                authStatus.innerHTML = '<span class="text-red-500">Error: Konfigurasi Firebase tidak ditemukan.</span>';
+                console.error("Firebase config is missing.");
+                return;
+            }
+
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                setLogLevel('Debug');
+                console.log("Firebase Initialized.");
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("User is authenticated:", userId);
+                        authStatus.innerHTML = `
+                            <span class="text-green-600 font-semibold">Terautentikasi (ID:</span>
+                            <span class="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded-full">${userId.substring(0, 10)}...</span>
+                            <span class="text-green-600 font-semibold">)</span>
+                        `;
+                        
+                        // PERBAIKAN: Jalankan seed DULU, baru load
+                        await seedDatabase(db, appId);
+                        await loadProjects(db, appId);
+
+                    } else {
+                        userId = null;
+                        authStatus.innerHTML = '<span class="text-gray-500">Not authenticated.</span>';
+                        console.log("User is not authenticated.");
+                    }
+                });
+
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                if (token) {
+                    console.log("Attempting sign in with custom token...");
+                    await signInWithCustomToken(auth, token);
+                } else {
+                    console.log("Attempting sign in anonymously...");
+                    await signInAnonymously(auth);
+                }
+
+            } catch (e) {
+                console.error("Firebase Initialization Error:", e);
+                authStatus.innerHTML = `<span class="text-red-500">Error: ${e.message}</span>`;
+            }
+        }
+        
+        // --- Jalankan Inisialisasi Saat DOM Siap ---
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeDOM();
+            initializeFirebase();
+             // Set default date ke hari ini
+             const today = new Date();
+             const year = today.getFullYear();
+             const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+             const day = String(today.getDate()).padStart(2, '0');
+             document.getElementById('reviewDate').value = `${year}-${month}-${day}`;
+            
+            showReviewerForm(); 
+        });
+
+    </script>
+</head>
+<body class="bg-gray-100 antialiased font-inter">
+
+    <!-- Status Autentikasi -->
+    <div id="authStatus" class="max-w-4xl mx-auto text-center text-sm text-gray-600 p-3 bg-white shadow rounded-b-lg -mt-1 mb-5 border-t border-gray-200">
+        Menghubungkan ke Firebase...
+    </div>
+
+    <!-- Modal Notifikasi -->
+    <div id="messageModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;">
+        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+            <h3 id="modalTitle" class="text-2xl font-bold text-gray-800 mb-4"></h3>
+            <div id="modalMessage" class="text-gray-600 mb-6 max-h-96 overflow-y-auto space-y-4"></div>
+            <button id="modalCloseButton" class="mt-4 w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition">
+                Tutup
+            </button>
+        </div>
+    </div>
+    
+    <!-- === Halaman Login (Baru) === -->
+    <div id="loginContainer" class="container mx-auto max-w-lg w-full bg-white shadow-2xl rounded-2xl p-6 md:p-10 my-10" style="display: none;">
+        <header class="mb-8 border-b pb-6 text-center">
+            <h1 class="text-3xl font-bold text-gray-800">Login Admin</h1>
+            <p class="text-lg text-gray-600 mt-2">Silakan masuk untuk melanjutkan</p>
+        </header>
+        <div class="space-y-4">
+            <div>
+                <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Username Admin</label>
+                <input type="text" id="username" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="admin">
+            </div>
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password Admin</label>
+                <input type="password" id="password" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="•••••••••">
+            </div>
+            <p id="loginError" class="text-red-500 text-sm"></p>
+            <button type="button" id="loginBtn" class="w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold shadow-md hover:bg-blue-700 transition duration-300">
+                Login sebagai Admin
+            </button>
+            
+            <div class="relative my-4">
+                <div class="absolute inset-0 flex items-center">
+                    <div class="w-full border-t border-gray-300"></div>
+                </div>
+                <div class="relative flex justify-center text-sm">
+                    <span class="px-2 bg-white text-gray-500">atau</span>
+                </div>
+            </div>
+
+            <button type="button" id="showReviewerFormBtn" class="w-full bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold shadow-md hover:bg-gray-700 transition duration-300">
+                Kembali ke Form Reviewer
+            </button>
+        </div>
+    </div>
+
+    <!-- === Halaman Reviewer (Formulir Utama) === -->
+    <div id="reviewerContainer" class="container mx-auto max-w-4xl w-full bg-white shadow-2xl rounded-2xl p-6 md:p-10 my-10">
+        
+        <!-- Header Form -->
+        <header class="mb-8 border-b pb-6">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800">Form Penilaian Reviewer</h1>
+                    <p class="text-lg text-gray-600 mt-2">Monitoring & Evaluasi Penelitian dan PKM Tahun Pendanaan 2025</p>
+                </div>
+                <button type="button" id="backToLoginBtn" class="text-sm text-blue-600 hover:underline">Login Admin</button>
+            </div>
+        </header>
+
+        <form id="monevForm" class="space-y-6">
+
+            <!-- Bagian 1: Info Reviewer -->
+            <fieldset class="border border-gray-300 rounded-lg p-6 shadow-sm">
+                <legend class="text-xl font-semibold text-gray-700 px-2">1. Identitas Reviewer</legend>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                    <div>
+                        <label for="reviewerName" class="block text-sm font-medium text-gray-700 mb-1">Nama Lengkap dan Gelar</label>
+                        <input type="text" id="reviewerName" name="reviewerName" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Contoh: Dr. Budi Santoso, M.Kom.">
+                    </div>
+                    <div>
+                        <label for="reviewDate" class="block text-sm font-medium text-gray-700 mb-1">Tanggal Kegiatan</label>
+                        <input type="date" id="reviewDate" name="reviewDate" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                </div>
+            </fieldset>
+
+            <!-- Bagian 2: Pilihan Kegiatan -->
+            <fieldset class="border border-gray-300 rounded-lg p-6 shadow-sm">
+                <legend class="text-xl font-semibold text-gray-700 px-2">2. Pilih Kegiatan</legend>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                    <div>
+                        <label for="kegiatanSelect" class="block text-sm font-medium text-gray-700 mb-1">Jenis Kegiatan</label>
+                        <select id="kegiatanSelect" name="kegiatanSelect" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="">-- Pilih Jenis Kegiatan --</option>
+                            <option value="penelitian">Penelitian</option>
+                            <option value="pkm">Pengabdian kepada Masyarakat (PKM)</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Ini akan muncul setelah Jenis Kegiatan dipilih -->
+                    <div id="pelaksanaContainer" class="hidden-section">
+                        <label id="pelaksanaHeader" for="pelaksanaSelect" class="block text-sm font-medium text-gray-700 mb-1">Pilih Pelaksana</label>
+                        <select id="pelaksanaSelect" name="pelaksanaSelect" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <!-- Opsi diisi oleh JavaScript -->
+                        </select>
+                    </div>
+                </div>
+            </fieldset>
+
+            <!-- Bagian 3: Data Kegiatan (Muncul setelah pelaksana dipilih) -->
+            <div id="dataDisplayContainer" class="hidden-section border border-gray-300 rounded-lg p-6 shadow-sm bg-gray-50">
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">3. Data Kegiatan Terpilih</h2>
+                <div id="dataDisplay" class="space-y-3 text-gray-800">
+                    <!-- Data diisi oleh JavaScript -->
+                </div>
+                <button type="button" id="mulaiReviewButton" class="mt-6 w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold shadow-md hover:bg-blue-700 transition duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    Mulai Review
+                </button>
+            </div>
+
+            <!-- Bagian 4: Form Penilaian (Muncul setelah tombol 'Mulai Review' diklik) -->
+            
+            <!-- FORM UNTUK PENELITIAN -->
+            <div id="formPenelitianContainer" class="hidden-section border border-gray-300 rounded-lg p-6 shadow-sm">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-4 border-b">4. Form Penilaian Penelitian</h2>
+                
+                <div class="space-y-6">
+                    
+                    <!-- Item 1 -->
+                    <div>
+                        <label for="penelitian_1" class="block text-md font-medium text-gray-700 mb-2">1. Kemajuan ketercapaian luaran wajib yang dijanjikan</label>
+                        <textarea id="penelitian_1" name="penelitian_1" rows="3" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan komentar Anda..."></textarea>
+                    </div>
+
+                    <!-- Item 2 -->
+                    <div>
+                        <label for="penelitian_2" class="block text-md font-medium text-gray-700 mb-2">2. Kesesuaian penelitian dengan usulan</label>
+                        <textarea id="penelitian_2" name="penelitian_2" rows="3" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan komentar Anda..."></textarea>
+                    </div>
+
+                    <!-- Item 3 -->
+                    <div>
+                        <label for="penelitian_3" class="block text-md font-medium text-gray-700 mb-2">3. Potensi keberlanjutan hasil penelitian</label>
+                        <textarea id="penelitian_3" name="penelitian_3" rows="3" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan komentar Anda..."></textarea>
+                    </div>
+
+                    <!-- Item 4 -->
+                    <div>
+                        <label for="penelitian_4" class="block text-md font-medium text-gray-700 mb-2">4. Level TKT saat ini (monev)</label>
+                        <textarea id="penelitian_4" name="penelitian_4" rows="2" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan komentar (misal: TKT 3)..."></textarea>
+                    </div>
+                    
+                    <!-- Item 5 -->
+                    <div>
+                        <label for="penelitian_5" class="block text-md font-medium text-gray-700 mb-2">5. Persentase serapan anggaran belanja</label>
+                        <textarea id="penelitian_5" name="penelitian_5" rows="2" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan komentar (misal: 85%)..."></textarea>
+                    </div>
+
+                    <!-- Catatan Akhir -->
+                    <div class="pt-4 border-t border-gray-200">
+                        <label for="catatanPenelitian" class="block text-lg font-medium text-gray-700 mb-2">Catatan:</label>
+                        <textarea id="catatanPenelitian" name="catatanPenelitian" rows="5" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan catatan, masukan, atau rekomendasi umum Anda di sini..."></textarea>
+                    </div>
+                    
+                    <button type="button" id="submitPenelitianBtn" class="w-full bg-green-600 text-white px-6 py-3 rounded-lg font-semibold shadow-md hover:bg-green-700 transition duration-300">
+                        Submit Penilaian Penelitian
+                    </button>
+                </div>
+            </div>
+
+            <!-- FORM UNTUK PKM -->
+            <div id="formPKMContainer" class="hidden-section border border-gray-300 rounded-lg p-6 shadow-sm">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-4 border-b">4. Form Penilaian PKM</h2>
+                
+                <!-- PERBAIKAN: Mengembalikan div skor total yang hilang -->
+                <div class="sticky top-4 z-10 mb-6">
+                    <div class="bg-blue-600 text-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-2 text-center">Total Nilai PKM</h3>
+                        <div id="totalScorePKM" class="text-5xl font-bold text-center">0.00</div>
+                        <div class="flex justify-between mt-4 text-blue-100">
+                            <span class="text-lg">Umum: <strong id="totalScoreUmum" class="font-bold">0.00</strong> / 60</span>
+                            <span class="text-lg">PKM: <strong id="totalScorePKMSpesifik" class="font-bold">0.00</strong> / 40</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- AKHIR PERBAIKAN -->
+
+                <!-- === INDIKATOR PENILAIAN UMUM (60 POINT) === -->
+                <h3 class="text-xl font-bold text-blue-700 bg-blue-50 p-4 rounded-lg mb-6">INDIKATOR PENILAIAN UMUM (60 POINT)</h3>
+                
+                <!-- 1. Kehadiran dan Pelaksanaan -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">1. Kehadiran dan Pelaksanaan (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A+B+C+D+E) / 10</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Kemampuan presentasi dan penguasaan materi usulan</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Presentasi kurang sistematis dan penyampaian materi kurang komunikatif</span>
+                                <input type="radio" name="1A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Presentasi sistematis atau penyampaian materi komunikatif</span>
+                                <input type="radio" name="1A" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Presentasi sistematis dan penyampaian materi komunikatif</span>
+                                <input type="radio" name="1A" value="20" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- B -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">B. Kehadiran Pelaksana</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana, mahasiswa dan mitra tidak hadir lengkap</span>
+                                <input type="radio" name="1B" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana, mahasiswa dan mitra hadir lengkap namun terdapat stakeholder yang tidak dapat dikonfirmasi/ditanyai</span>
+                                <input type="radio" name="1B" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana, mahasiswa dan mitra hadir lengkap dan dapat dikonfirmasi/ditanyai keseluruhannya</span>
+                                <input type="radio" name="1B" value="20" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- C -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">C. Kesiapan dan Kelengkapan Pelaksana</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana nampak tidak memiliki persiapan dalam pelaksanaan monev</span>
+                                <input type="radio" name="1C" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana telah mempersiapkan dokumen dalam presentasi namun persiapan terhadap mitra sasaran dan waktunya kurang dipersiapkan</span>
+                                <input type="radio" name="1C" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana telah mempersiapkan dokumen dalam presentasi dan persiapan terhadap mitra dan waktunya</span>
+                                <input type="radio" name="1C" value="20" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- D -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">D. Ketepatan waktu</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana tidak hadir dalam monev</span>
+                                <input type="radio" name="1D" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana terlambat hadir dan atau tidak mengikuti pelaksanaan monev dari awal hingga selesai</span>
+                                <input type="radio" name="1D" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana hadir tepat waktu dan mengikuti pelaksanaan monev hingga selesai</span>
+                                <input type="radio" name="1D" value="20" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- E -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">E. Kesesuaian substansi usulan dengan materi presentasi</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Substansi tidak sesuai</span>
+                                <input type="radio" name="1E" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Substansi cukup sesuai</span>
+                                <input type="radio" name="1E" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Substansi sesuai</span>
+                                <input type="radio" name="1E" value="20" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- 2. Artikel publikasi berita -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">2. Artikel publikasi berita pada media massa (cetak/elektronik) (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A) / 10</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Artikel publikasi berita pada media massa (cetak/elektronik)</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">
+                                    ·&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Tidak ada draft artikel<br>
+                                    ·&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Ada/ terbit pada media bukan sesuai ketentuan<br>
+                                    ·&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Ada/terbit pada media cetak/elektronik sesuai ketentuan tapi tidak lengkap menyebutkan nama DPPM, institusi, dan sumber dana
+                                </span>
+                                <input type="radio" name="2A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada draft/ editing artikel media massa sesuai ketentuan dan menyebutkan nama DPPM, institusi, dan sumber dana</span>
+                                <input type="radio" name="2A" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Artikel media massa sesuai ketentuan dan menyebutkan nama DPPM, institusi, dan sumber dana hanya menunggu publish</span>
+                                <input type="radio" name="2A" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Sudah terbit di media cetak/elektronik lokal, lengkap menyebutkan nama DPPM, institusi, dan sumber dana</span>
+                                <input type="radio" name="2A" value="70" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Sudah terbit di media cetak/elektronik nasional, menyebutkan nama DPPM, institusi, dan sumber dana</span>
+                                <input type="radio" name="2A" value="100" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- 3. Keterlibatan Mahasiswa -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">3. Keterlibatan Mahasiswa (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A) / 5</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Keterlibatan Mahasiswa sesuai ketentuan</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada keterlibatan mahasiswa</span>
+                                <input type="radio" name="3A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Mahasiswa yang terlibat di bawah ketentuan</span>
+                                <input type="radio" name="3A" value="5" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Mahasiswa yang terlibat sudah sesuai ketentuan namun belum ada pembagian tugas yang jelas</span>
+                                <input type="radio" name="3A" value="25" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Mahasiswa yang terlibat sudah sesuai ketentuan dan sudah ada pembagian tugas yang jelas</span>
+                                <input type="radio" name="3A" value="50" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- 4. Karya Audio Visual (Video) -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">4. Karya Audio Visual (Video) (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A+B+C+D+E+F+G+H) / 8</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Channel Penayangan YouTube</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video / video belum diunggah di YouTube</span>
+                                <input type="radio" name="4A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube namun bukan merupakan YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4A" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4A" value="20" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- B -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">B. Kualitas video</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video/ video belum diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4B" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana dengan resolusi &lt; 1080p</span>
+                                <input type="radio" name="4B" value="5" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana dengan resolusi video 1080p</span>
+                                <input type="radio" name="4B" value="15" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- C -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">C. Bentuk Video</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video/ video belum diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4C" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video sudah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana namun masih merupakan kumpulan foto/PowerPoint</span>
+                                <input type="radio" name="4C" value="1" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video sudah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana dan merupakan video pendek bukan kumpulan foto/PowerPoint</span>
+                                <input type="radio" name="4C" value="10" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- D -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">D. Voice Over dan Running Text/Text Title/Subtitle</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video/ video belum diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4D" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana namun tidak terdapat voice over, subtitle, dan running text</span>
+                                <input type="radio" name="4D" value="5" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana dan terdapat voice over, subtitle, dan running text</span>
+                                <input type="radio" name="4D" value="15" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- E -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">E. Penyebutan Program dan Sumber dana</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video/ video belum diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4E" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana namun hanya menyebutkan nama program/sumber pendanaan atau ada kesalahan pada logo walau penyebutannya benar</span>
+                                <input type="radio" name="4E" value="1" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana dan telah menyebutkan nama program serta sumber pendanaan secara benar</span>
+                                <input type="radio" name="4E" value="10" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- F -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">F. Cerita dan Penggambaran</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video/ video belum diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4F" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana namun belum menggambarkan gambaran pelaksanaan pengabdian serta hasil pengabdian</span>
+                                <input type="radio" name="4F" value="1" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana dan telah menggambarkan gambaran pelaksanaan pengabdian serta hasil pengabdian</span>
+                                <input type="radio" name="4F" value="10" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- G -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">G. Daya Tarik, Transisi dan Stabilisasi</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada video/ video belum diunggah di YouTube lembaga/ instansi Perguruan Tinggi ketua tim pelaksana</span>
+                                <input type="radio" name="4G" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana namun Tidak menarik/bagus</span>
+                                <input type="radio" name="4G" value="1" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Video telah diunggah di YouTube lembaga/ instansi Perguruan Tinggi Pelaksana dan video menarik dan bagus</span>
+                                <input type="radio" name="4G" value="10" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- H -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">H. Jumlah viewers video</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada viewers</span>
+                                <input type="radio" name="4H" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Jumlah viewers &lt; 25</span>
+                                <input type="radio" name="4H" value="1" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Jumlah viewers 25–50</span>
+                                <input type="radio" name="4H" value="3" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Jumlah viewers 50–100</span>
+                                <input type="radio" name="4H" value="7" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Jumlah viewers > 100</span>
+                                <input type="radio" name="4H" value="10" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- 5. Karya Visual (Poster) -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">5. Karya Visual (Poster) (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A+B+C) / 10</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Format Poster (Ukuran, Orientasi, Logo)</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada poster/ poster tidak sesuai ketentuan dan tidak menyebutkan sumber pendanaan dan logo Kemdiktisaintek.</span>
+                                <input type="radio" name="5A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster telah sesuai ketentuan namun tidak menyebutkan sumber pendanaan dan logo Kemdiktisaintek</span>
+                                <input type="radio" name="5A" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster telah sesuai ketentuan dan telah menyebutkan sumber pendanaan dan logo Kemdiktisaintek</span>
+                                <input type="radio" name="5A" value="40" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- B -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">B. Isi/Substansi Poster</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada poster/ poster tidak sesuai ketentuan dan tidak menyebutkan sumber pendanaan dan logo Kemdiktisaintek</span>
+                                <input type="radio" name="5B" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster tidak menggambarkan gambaran pelaksanaan pengabdian serta hasil pengabdian</span>
+                                <input type="radio" name="5B" value="15" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster telah menggambarkan gambaran pelaksanaan pengabdian serta hasil pengabdian</span>
+                                <input type="radio" name="5B" value="30" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- C -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">C. Daya Tarik, Warna dan Layout</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada poster/ poster tidak sesuai ketentuan dan tidak menyebutkan sumber pendanaan dan logo Kemdiktisaintek</span>
+                                <input type="radio" name="5C" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster tidak menarik, warna monoton dan layout tidak tersusun rapih</span>
+                                <input type="radio" name="5C" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster kurang menarik dari segi warna, dan layout</span>
+                                <input type="radio" name="5C" value="15" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Poster menarik dalam warna dan layout</span>
+                                <input type="radio" name="5C" value="30" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- 6. Penggunaan Anggaran 80% -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">6. Penggunaan Anggaran 80% (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A+B+C) / 10</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Dokumen Laporan Penggunaan Anggaran</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">
+                                    ·&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Dokumen laporan penggunaan angaran tidak ada/belum diunggah<br>
+                                    ·&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Dokumen laporan pengunaan anggaran sudah diunggah namun tidak disertai kwitansi dan bukti dukung<br>
+                                    ·&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Dokumen laporan penggunaan anggaran sudah diunggah dengan disertai kwitansi dan bukti dukung namun kwitansi dan bukti dukung tidak sesuai dengan ketentuan
+                                </span>
+                                <input type="radio" name="6A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Dokumen laporan penggunaan anggaran sudah diunggah dengan disertai kwitansi dan bukti dukung namun beberapa kwitansi dan bukti dukung tidak sesuai dengan ketentuan</span>
+                                <input type="radio" name="6A" value="4" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Dokumen laporan penggunaan anggaran sudah diunggah dengan disertai kwitansi dan bukti dukung dan telah sesuai dengan ketentuan</span>
+                                <input type="radio" name="6A" value="40" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- B -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">B. Penggunaan Anggaran 80% dengan SBM</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Penggunaan anggaran tidak sesuai dengan ketentuan pada SBM 2024</span>
+                                <input type="radio" name="6B" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Penggunaan beberapa komponen anggaran tidak sesuai dengan SBM 2024</span>
+                                <input type="radio" name="6B" value="3" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Penggunaan komponen anggaran sesuai dengan ketentuan dalam SBM 2024</span>
+                                <input type="radio" name="6B" value="30" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- C -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">C. Penggunaan Anggaran 80% dengan Panduan dan Komponennya</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Penggunaan anggaran tidak sesuai dengan ketentuan dalam panduan dan komponen penganggaran tidak dimasukkan sesuai tempatnya</span>
+                                <input type="radio" name="6C" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Penggunaan beberapa komponen anggaran tidak sesuai dengan ketentuan dalam panduan namun komponen penganggaran telah dimasukkan sesuai tempatnya</span>
+                                <input type="radio" name="6C" value="6" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Penggunaan komponen anggaran sesuai dengan ketentuan dalam panduan dan komponen penganggaran telah dimasukkan sesuai tempatnya</span>
+                                <input type="radio" name="6C" value="30" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- === INDIKATOR PENILAIAN PKM (40 POINT) === -->
+                <h3 class="text-xl font-bold text-teal-700 bg-teal-50 p-4 rounded-lg mb-6">INDIKATOR PENILAIAN PKM (40 POINT)</h3>
+
+                <!-- 1. Publikasi pada Jurnal -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">1. Publikasi pada Jurnal nasional terakreditasi SINTA 1-6 (10 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A) / 10</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Publikasi pada Jurnal nasional terakreditasi SINTA 1-6</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">
+                                    §&nbsp; Tidak ada draft artikel<br>
+                                    §&nbsp; Telah terbit namun bukan pada jurnal terakreditasi SINTA<br>
+                                    §&nbsp; Telah terbit namun tidak sesuai dengan ketentuan
+                                </span>
+                                <input type="radio" name="P1A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada draft artikel sesuai ketentuan</span>
+                                <input type="radio" name="P1A" value="10" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada bukti terkirim (submitted) sesuai ketentuan</span>
+                                <input type="radio" name="P1A" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada bukti diterima/direviu/revisi (accepted/in review)</span>
+                                <input type="radio" name="P1A" value="70" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Terpublikasi (published) nasional terindeks Sinta</span>
+                                <input type="radio" name="P1A" value="100" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- 2. PEMBERDAYAAN DAN KEBERDAYAAN -->
+                <fieldset class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6">
+                    <legend class="text-lg font-semibold text-gray-800 mb-2">2. PEMBERDAYAAN DAN KEBERDAYAAN (30 Poin)</legend>
+                    <p class="text-sm text-gray-500 mb-4 italic">Formula: (A+B+C+D+E+F+G) / 10</p>
+                    
+                    <!-- A -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">A. Peningkatan level keberdayaan pada aspek kegiatan Ke 1</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada peningkatan level keberdayaan</span>
+                                <input type="radio" name="P2A" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada peningkatan level keberdayaan mitra yang belum terkuantifikasi atau tidak ada data kuantifikasi kondisi sebelum yang diperbandingan dengan kondisi setelah program pada aspek yang dipilih</span>
+                                <input type="radio" name="P2A" value="25" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada peningkatan level keberdayaan mitra yang terkuantifikasi disertakan dasar dan hasil penghitungannya</span>
+                                <input type="radio" name="P2A" value="50" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- B -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">B. Peningkatan level keberdayaan pada aspek kegiatan Ke 2</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada peningkatan level keberdayaan</span>
+                                <input type="radio" name="P2B" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada peningkatan level keberdayaan mitra yang belum terkuantifikasi atau tidak ada data kuantifikasi kondisi sebelum yang diperbandingan dengan kondisi setelah program pada aspek yang dipilih</span>
+                                <input type="radio" name="P2B" value="25" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada peningkatan level keberdayaan mitra yang terkuantifikasi disertakan dasar dan hasil penghitungannya</span>
+                                <input type="radio" name="P2B" value="50" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- C -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">C. Persen peningkatan level keberdayaan bidang ke 1</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada peningkatan level keberdayaan / level keberdayaan tidak terkuantifikasi</span>
+                                <input type="radio" name="P2C" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak memuaskan (≤ 20%)</span>
+                                <input type="radio" name="P2C" value="5" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Cukup memuaskan (21 – 50%)</span>
+                                <input type="radio" name="P2C" value="12" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Memuaskan (51 % - 70%)</span>
+                                <input type="radio" name="P2C" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Sangat memuaskan (>70%)</span>
+                                <input type="radio" name="P2C" value="25" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- D -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">D. Persen peningkatan level keberdayaan bidang ke 2</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada peningkatan level keberdayaan / level keberdayaan tidak terkuantifikasi</span>
+                                <input type="radio" name="P2D" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak memuaskan (≤ 20%)</span>
+                                <input type="radio" name="P2D" value="5" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Cukup memuaskan (21 – 50%)</span>
+                                <input type="radio" name="P2D" value="12" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Memuaskan (51 % - 70%)</span>
+                                <input type="radio" name="P2D" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Sangat memuaskan (>70%)</span>
+                                <input type="radio" name="P2D" value="25" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- E -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">E. Penerapan teknologi dan inovasi</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak ada teknologi dan inovasi yang diterapkan kepada mitra sasaran atau hanya menerapkan satu bidang permasalahan pada mitra sasaran</span>
+                                <input type="radio" name="P2E" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Ada penerapan teknologi dan inovasi yang diterapkan untuk dua bidang masalah, namun tidak sesuai dengan kebutuhan mitra sasaran (Mitra sasaran mengetahui adanya teknologi dan inovasi)</span>
+                                <input type="radio" name="P2E" value="5" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Teknologi dan inovasi yang diterapkan sesuai dengan kebutuhan mitra pada dua bidang masalah, namun belum dapat dioptimalkan oleh mitra sasaran (Mitra sasaran mengetahui adanya teknologi dan inovasi dan mulai menggunakan/menerapkan)</span>
+                                <input type="radio" name="P2E" value="15" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Teknologi dan inovasi yang diterapkan sesuai dengan kebutuhan mitra pada dua bidang masalah, dan sudah dapat dioptimalkan oleh mitra sasaran (Mitra sasaran mengetahui adanya teknologi dan inovasi dan telah memanfaatkan)</span>
+                                <input type="radio" name="P2E" value="35" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Teknologi dan inovasi yang diterapkan sesuai dengan kebutuhan mitra pada dua bidang masalah, dan sudah dapat dioptimalkan oleh mitra sasaran dan dapat memberikan peningkatan keberdayaan</span>
+                                <input type="radio" name="P2E" value="50" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- F -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">F. Kehadiran seluruh anggota tim pelaksana dan mahasiswa ke lokasi mitra</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana hadir ke lokasi kegiatan kurang dari 4 kali ke lokasi mitra sasaran</span>
+                                <input type="radio" name="P2F" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana hadir 4-7 kali kedatangan ke lokasi mitra sasaran</span>
+                                <input type="radio" name="P2F" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tim pelaksana hadir > 7 kali kedatangan ke lokasi mitra sasaran</span>
+                                <input type="radio" name="P2F" value="50" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- G -->
+                    <div class="ml-4 mt-3 border-l-2 border-gray-200 pl-4">
+                        <label class="font-medium text-gray-700">G. Partisipasi dan peran seluruh anggota tim pelaksana dan mahasiswa</label>
+                        <div class="space-y-2 mt-2">
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Tidak semua tim pelaksana memiliki peran dalam pemberdayaan/Distribusi pembagian tugas dan peran tidak ada</span>
+                                <input type="radio" name="P2G" value="0" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Pembagian peran tim pelaksana dalam pemberdayaan tidak sesuai kepakaran</span>
+                                <input type="radio" name="P2G" value="20" class="form-radio pkm-score-input">
+                            </label>
+                            <label class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                                <span class="text-sm text-gray-600">Seluruh tim pelaksana dan mahasiswa memiliki peran dalam melakukan pemberdayaan</span>
+                                <input type="radio" name="P2G" value="50" class="form-radio pkm-score-input">
+                            </label>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- Catatan Akhir dan Submit -->
+                <div class="mt-8">
+                    <label for="catatanPKM" class="block text-lg font-medium text-gray-700 mb-2">Catatan Reviewer</label>
+                    <textarea id="catatanPKM" name="catatanPKM" rows="5" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Tuliskan catatan, masukan, atau rekomendasi Anda di sini..."></textarea>
+                </div>
+
+                <button type="button" id="submitPKMBtn" class="mt-8 w-full bg-green-600 text-white px-6 py-3 rounded-lg font-semibold shadow-md hover:bg-green-700 transition duration-300">
+                    Submit Penilaian PKM
+                </button>
+            </div>
+
+        </form>
+    </div>
+
+    <!-- === Halaman Admin (Baru) === -->
+    <div id="adminContainer" class="container mx-auto max-w-6xl w-full bg-white shadow-2xl rounded-2xl p-6 md:p-10 my-10" style="display: none;">
+        <header class="mb-8 border-b pb-6">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800">Admin Panel</h1>
+                    <p class="text-lg text-gray-600 mt-2">Rekapitulasi Penilaian Monev</p>
+                </div>
+                <div>
+                    <button type="button" id="refreshAdminDataBtn" class="bg-blue-500 text-white px-4 py-2 rounded-lg font-semibold shadow-md hover:bg-blue-600 transition duration-300 mr-4">
+                        Refresh Data
+                    </button>
+                    <button type="button" id="logoutBtn" class="text-sm text-red-600 hover:underline">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Kontainer Tabel Rekapitulasi -->
+        <div id="recapTableContainer" class="w-full">
+            <p class="text-gray-500">Memuat data rekapitulasi...</p>
+            <!-- Tabel akan dirender oleh JavaScript di sini -->
+        </div>
+    </div>
+
+</body>
+</html>
+
