@@ -63,11 +63,24 @@
         };
         // --- AKHIR KONFIGURASI FIREBASE ANDA ---
 
-        const firebaseConfig = JSON.parse(
-            typeof __firebase_config !== 'undefined' 
-            ? __firebase_config 
-            : JSON.stringify(userFirebaseConfig) // Gunakan config Anda sebagai fallback
-        );
+        // const firebaseConfig = JSON.parse(
+        //     typeof __firebase_config !== 'undefined' 
+        //     ? __firebase_config 
+        //     : JSON.stringify(userFirebaseConfig) // Gunakan config Anda sebagai fallback
+        // );
+        
+        // PERBAIKAN: Logika pemuatan konfigurasi yang lebih sederhana
+        let firebaseConfig;
+        if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+            try {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } catch (e) {
+                console.error("Gagal parse __firebase_config, menggunakan fallback:", e);
+                firebaseConfig = userFirebaseConfig; // Fallback jika parse gagal
+            }
+        } else {
+            firebaseConfig = userFirebaseConfig; // Langsung gunakan objek config Anda jika __firebase_config tidak ada
+        }
 
         // --- Variabel Data Aplikasi ---
         let dataPenelitian = [];
@@ -1932,5 +1945,6 @@
 
 </body>
 </html>
+
 
 
