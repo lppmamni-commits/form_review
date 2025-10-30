@@ -56,19 +56,13 @@
           apiKey: "AIzaSyCDVFpuvpy1UYGCJepEOt6iGlaEZiN4xow",
           authDomain: "review-ppm.firebaseapp.com",
           projectId: "review-ppm",
-          storageBucket: "review-ppm.firebasestorage.app",
+          storageBucket: "review-ppm.appspot.com", // <-- PERBAIKAN DI SINI
           messagingSenderId: "1073630033517",
           appId: "1:1073630033517:web:d874d7ed7e010c8e683164",
           measurementId: "G-NPZD5VT3YS"
         };
         // --- AKHIR KONFIGURASI FIREBASE ANDA ---
 
-        // const firebaseConfig = JSON.parse(
-        //     typeof __firebase_config !== 'undefined' 
-        //     ? __firebase_config 
-        //     : JSON.stringify(userFirebaseConfig) // Gunakan config Anda sebagai fallback
-        // );
-        
         // PERBAIKAN: Logika pemuatan konfigurasi yang lebih sederhana
         let firebaseConfig;
         if (typeof __firebase_config !== 'undefined' && __firebase_config) {
@@ -1945,6 +1939,7 @@
 
 </body>
 </html>
+
 
 
 
