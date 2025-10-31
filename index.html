@@ -36,6 +36,11 @@
             background-color: #9ca3af; /* gray-400 */
             cursor: not-allowed;
         }
+        /* Style untuk modal detail admin */
+        .admin-detail-modal-content {
+            max-height: 80vh;
+            overflow-y: auto;
+        }
     </style>
 
     <!-- Impor Firebase SDK -->
@@ -85,7 +90,6 @@
         
         // --- Inisialisasi Library PDF ---
         const { jsPDF } = window.jspdf;
-        // Tidak perlu variabel global 'autoTable' jika plugin terpasang ke prototype jsPDF
 
         // --- Elemen DOM ---
         let authStatus, messageModal, modalTitle, modalMessage, modalCloseButton;
@@ -99,9 +103,20 @@
         let pkmScoreInputs, totalScorePKMDisplay, totalScoreUmumDisplay, totalScorePKMSpesifikDisplay;
 
         // --- Fungsi Modal Notifikasi ---
-        function showMessageModal(title, message) {
+        function showMessageModal(title, message, isDetailView = false) {
             modalTitle.textContent = title;
             modalMessage.innerHTML = message; // Diubah ke innerHTML untuk tombol
+            
+            // Atur lebar modal untuk detail admin
+            const modalBox = messageModal.querySelector('div');
+            if (isDetailView) {
+                modalBox.classList.add('max-w-4xl'); // Lebih lebar
+                modalMessage.classList.add('admin-detail-modal-content');
+            } else {
+                modalBox.classList.remove('max-w-4xl'); // Kembali normal
+                modalMessage.classList.remove('admin-detail-modal-content');
+            }
+            
             messageModal.style.display = 'flex';
         }
         function hideMessageModal() {
@@ -218,6 +233,7 @@
             recapTableContainer.innerHTML = tableHtml;
         }
         
+        // FUNGSI BARU: Menampilkan Detail Borang di Admin Panel
         function showReviewDetails(index) {
             const review = adminRecapData[index];
             if (!review) return;
@@ -233,35 +249,88 @@
                     <p><strong>Judul:</strong> ${review.project?.judul}</p>
                     <p><strong>Skema:</strong> ${review.project?.skema}</p>
                     <p><strong>Afiliasi:</strong> ${review.project?.afiliasi}</p>
-                    <hr>
+                    <hr class="my-4">
             `;
 
+            // Jika Tipe PKM: Kloning dan isi borang
             if (review.reviewType === 'pkm') {
                 detailHtml += `
-                    <h4 class="font-semibold">Skor PKM</h4>
-                    <p><strong>Skor Umum:</strong> ${review.totals?.totalUmum?.toFixed(2) || 0} / 60</p>
-                    <p><strong>Skor PKM:</strong> ${review.totals?.totalPKMSpesifik?.toFixed(2) || 0} / 40</p>
-                    <p><strong>Total Keseluruhan:</strong> ${review.totals?.totalKeseluruhan?.toFixed(2) || 0} / 100</p>
-                    <h4 class="font-semibold mt-2">Catatan Reviewer:</h4>
-                    <pre class="bg-gray-100 p-3 rounded-md text-sm whitespace-pre-wrap">${review.catatan || 'Tidak ada catatan.'}</pre>
+                    <h4 class="font-semibold text-xl mb-2">Ringkasan Skor PKM</h4>
+                    <div class="bg-blue-600 text-white p-4 rounded-lg shadow-md mb-6">
+                        <h3 class="text-lg font-semibold text-center">Total Nilai PKM: <span class="text-3xl font-bold">${review.totals?.totalKeseluruhan?.toFixed(2) || 0}</span></h3>
+                        <div class="flex justify-between mt-2 text-blue-100">
+                            <span class="text-md">Umum: <strong class="font-bold">${review.totals?.totalUmum?.toFixed(2) || 0}</strong> / 60</span>
+                            <span class="text-md">PKM: <strong class="font-bold">${review.totals?.totalPKMSpesifik?.toFixed(2) || 0}</strong> / 40</span>
+                        </div>
+                    </div>
+                    <hr class="my-4">
+                    <h4 class="font-semibold text-xl mb-4">Detail Borang Penilaian PKM</h4>
                 `;
+                
+                // Kloning borang PKM
+                const pkmBorang = document.getElementById('formPKMContainer').cloneNode(true);
+                pkmBorang.style.display = 'block';
+                pkmBorang.id = 'adminDetailPKM';
+                
+                // Hapus elemen yang tidak perlu (skor total, catatan, tombol submit)
+                pkmBorang.querySelector('.sticky')?.remove();
+                pkmBorang.querySelector('label[for="catatanPKM"]')?.parentElement.remove();
+                pkmBorang.querySelector('#submitPKMBtn')?.remove();
+                
+                // Isi nilai radio button berdasarkan data 'scores'
+                const scores = review.scores || {};
+                for (const key in scores) {
+                    const value = scores[key];
+                    // Cari radio button yang sesuai di dalam kloningan
+                    const radio = pkmBorang.querySelector(`input[name="${key}"][value="${value}"]`);
+                    if (radio) {
+                        radio.checked = true;
+                    }
+                }
+
+                // Nonaktifkan semua input di dalam kloningan
+                pkmBorang.querySelectorAll('input[type="radio"]').forEach(radio => {
+                    radio.disabled = true;
+                });
+
+                detailHtml += pkmBorang.innerHTML; // Tambahkan HTML borang yang sudah diisi
+                
+            // Jika Tipe Penelitian: Buat ulang form dengan data
             } else if (review.reviewType === 'penelitian') {
+                const k = review.komentar || {};
                 detailHtml += `
-                    <h4 class="font-semibold">Komentar Penelitian</h4>
-                    <ul class="list-disc list-inside space-y-2">
-                        <li><strong>Kemajuan Luaran:</strong> ${review.komentar?.kemajuanLuaran || ''}</li>
-                        <li><strong>Kesesuaian Usulan:</strong> ${review.komentar?.kesesuaianUsulan || ''}</li>
-                        <li><strong>Potensi Keberlanjutan:</strong> ${review.komentar?.potensiKeberlanjutan || ''}</li>
-                        <li><strong>Level TKT:</strong> ${review.komentar?.levelTKT || ''}</li>
-                        <li><strong>Serapan Anggaran:</strong> ${review.komentar?.serapanAnggaran || ''}</li>
-                    </ul>
-                    <h4 class="font-semibold mt-2">Catatan Umum:</h4>
-                    <pre class="bg-gray-100 p-3 rounded-md text-sm whitespace-pre-wrap">${review.catatan || 'Tidak ada catatan.'}</pre>
+                    <h4 class="font-semibold text-xl mb-4">Detail Borang Penilaian Penelitian</h4>
+                    <div class="space-y-6">
+                        <div>
+                            <label class="block text-md font-medium text-gray-700 mb-2">1. Kemajuan ketercapaian luaran wajib yang dijanjikan</label>
+                            <textarea rows="3" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-100" readonly>${k.kemajuanLuaran || ''}</textarea>
+                        </div>
+                        <div>
+                            <label class="block text-md font-medium text-gray-700 mb-2">2. Kesesuaian penelitian dengan usulan</label>
+                            <textarea rows="3" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-100" readonly>${k.kesesuaianUsulan || ''}</textarea>
+                        </div>
+                        <div>
+                            <label class="block text-md font-medium text-gray-700 mb-2">3. Potensi keberlanjutan hasil penelitian</label>
+                            <textarea rows="3" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-100" readonly>${k.potensiKeberlanjutan || ''}</textarea>
+                        </div>
+                        <div>
+                            <label class="block text-md font-medium text-gray-700 mb-2">4. Level TKT saat ini (monev)</label>
+                            <textarea rows="2" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-100" readonly>${k.levelTKT || ''}</textarea>
+                        </div>
+                        <div>
+                            <label class="block text-md font-medium text-gray-700 mb-2">5. Persentase serapan anggaran belanja</label>
+                            <textarea rows="2" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-100" readonly>${k.serapanAnggaran || ''}</textarea>
+                        </div>
+                        <div class="pt-4 border-t border-gray-200">
+                            <label class="block text-lg font-medium text-gray-700 mb-2">Catatan:</label>
+                            <textarea rows="5" class="w-full p-3 border border-gray-300 rounded-lg bg-gray-100" readonly>${review.catatan || 'Tidak ada catatan.'}</textarea>
+                        </div>
+                    </div>
                 `;
             }
 
             detailHtml += '</div>';
-            showMessageModal('Detail Penilaian', detailHtml);
+            showMessageModal('Detail Penilaian', detailHtml, true); // true menandakan ini detail view
         }
         window.showReviewDetails = showReviewDetails;
 
@@ -335,9 +404,8 @@
 
         async function loadProjects(db, appId) {
             // PERBAIKAN: Pastikan array tidak di-reset jika data sudah ada
-            if (dataPenelitian.length > 0 || dataPKM.length > 0) {
+            if (isDataLoaded) { // Gunakan flag
                 console.log("Data sudah dimuat sebelumnya.");
-                isDataLoaded = true;
                 updatePelaksanaListBasedOnData(); // Panggil update list
                 return;
             }
@@ -1168,9 +1236,9 @@
 
     <!-- Modal Notifikasi -->
     <div id="messageModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;">
-        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4"> <!-- Ukuran default -->
             <h3 id="modalTitle" class="text-2xl font-bold text-gray-800 mb-4"></h3>
-            <div id="modalMessage" class="text-gray-600 mb-6 max-h-96 overflow-y-auto space-y-4"></div>
+            <div id="modalMessage" class="text-gray-600 mb-6 space-y-4"></div> <!-- Konten modal -->
             <button id="modalCloseButton" class="mt-4 w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition">
                 Tutup
             </button>
